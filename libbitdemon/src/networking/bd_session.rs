@@ -11,6 +11,18 @@ pub struct BdSession {
     stream: BufReader<TcpStream>,
 }
 
+impl BdSession {
+    /// Address of the connected console.
+    ///
+    /// BO2 authenticates on one TCP session and then opens a second one for the
+    /// LSG handshake, which carries no identity of its own. Matching the two by
+    /// peer address is what lets the LSG side recover the PID that just
+    /// authenticated instead of assuming a single hard-coded player.
+    pub fn peer_ip(&self) -> Option<std::net::IpAddr> {
+        self.stream.get_ref().peer_addr().ok().map(|a| a.ip())
+    }
+}
+
 impl io::Read for BdSession {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
         self.stream.read(buf)
