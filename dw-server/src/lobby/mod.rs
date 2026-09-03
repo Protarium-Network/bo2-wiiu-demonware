@@ -14,8 +14,9 @@ use crate::lobby::rich_presence::create_rich_presence_handler;
 use crate::lobby::storage::create_storage_handler;
 use axum::Router;
 use bitdemon::lobby::LobbyServiceId::{
-    Anticheat, BandwidthTest, Counter, Dml, EventLog, Group, KeyArchive, League, Profile,
-    RichPresence, Storage, TitleUtilities, Twitch, VoteRank, Youtube,
+    Anticheat, BandwidthTest, Counter, Dml, EventLog, Group, KeyArchive, League, Matchmaking,
+    Profile,
+    Messaging, RichPresence, Stats, Storage, TitleUtilities, Twitch, VoteRank, Youtube,
 };
 use bitdemon::lobby::anti_cheat::AntiCheatHandler;
 use bitdemon::lobby::bandwidth::BandwidthHandler;
@@ -23,6 +24,9 @@ use bitdemon::lobby::dml::DmlHandler;
 use bitdemon::lobby::event_log::EventLogHandler;
 use bitdemon::lobby::key_archive::KeyArchiveHandler;
 use bitdemon::lobby::league::LeagueHandler;
+use bitdemon::lobby::matchmaking::MatchmakingHandler;
+use bitdemon::lobby::messaging_service::MessagingHandler;
+use bitdemon::lobby::stats_service::StatsHandler;
 use bitdemon::lobby::title_utilities::TitleUtilitiesHandler;
 use bitdemon::lobby::twitch::TwitchHandler;
 use bitdemon::lobby::vote_rank::VoteRankHandler;
@@ -50,8 +54,11 @@ pub fn configure_lobby_server(
     configurer.direct_config(Group, create_group_handler(session_manager.clone()));
     configurer.direct_config(KeyArchive, Arc::new(KeyArchiveHandler::new()));
     configurer.direct_config(League, Arc::new(LeagueHandler::new()));
+    configurer.direct_config(Matchmaking, Arc::new(MatchmakingHandler::new()));
+    configurer.direct_config(Messaging, Arc::new(MessagingHandler::new()));
     configurer.direct_config(Profile, create_profile_handler());
     configurer.direct_config(RichPresence, create_rich_presence_handler(session_manager));
+    configurer.direct_config(Stats, Arc::new(StatsHandler::new()));
     configurer.direct_config(Storage, create_storage_handler());
     configurer.direct_config(TitleUtilities, Arc::new(TitleUtilitiesHandler::new()));
     configurer.direct_config(Twitch, Arc::new(TwitchHandler::new()));

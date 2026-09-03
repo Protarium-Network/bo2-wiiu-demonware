@@ -7,6 +7,9 @@ pub mod event_log;
 pub mod group;
 pub mod key_archive;
 pub mod league;
+pub mod matchmaking;
+pub mod messaging_service;
+pub mod stats_service;
 mod lsg;
 pub mod profile;
 mod response;
@@ -273,8 +276,15 @@ impl BdMessageHandler for LobbyServer {
                 Ok(())
             }
             None => {
-                warn!("Tried to call unavailable service {service_id:?}");
-                TaskReply::with_only_error_code(ServiceNotAvailable, 0)
+                // A lobby task reply must echo the requested operation ID.  Returning
+                // zero here leaves clients waiting for the original task until they
+                // time out, which BO2 Wii U reports as "server is not available".
+                message.reader.set_type_checked(true);
+                let operation_id = message.reader.read_u8()?;
+                warn!(
+                    "Tried to call unavailable service {service_id:?} operation={operation_id}"
+                );
+                TaskReply::with_only_error_code(ServiceNotAvailable, operation_id)
                     .to_response()?
                     .send(session)?;
 
