@@ -1,6 +1,7 @@
 use crate::auth::auth_handler::AuthMessageType;
 use crate::auth::auth_handler::ThreadSafeAuthHandler;
 use crate::auth::auth_handler::steam::SteamAuthHandler;
+use crate::auth::auth_handler::wiiu::WiiUAuthHandler;
 use crate::auth::key_store::ThreadSafeBackendPrivateKeyStorage;
 use crate::auth::response::{AuthResponse, AuthResponseWithOnlyCode};
 use crate::messaging::BdErrorCode::AuthIllegalOperation;
@@ -27,7 +28,47 @@ impl AuthServer {
 
         auth_server.add_handler(
             AuthMessageType::SteamForMmpRequest,
-            Arc::new(SteamAuthHandler::new(key_store)),
+            Arc::new(SteamAuthHandler::new(key_store.clone())),
+        );
+
+        auth_server.add_handler(
+            AuthMessageType::WiiUForMmpRequest,
+            Arc::new(WiiUAuthHandler::new(
+                key_store.clone(),
+                AuthMessageType::WiiUForMmpReply,
+            )),
+        );
+
+        auth_server.add_handler(
+            AuthMessageType::WiiUForMmpRequest2,
+            Arc::new(WiiUAuthHandler::new(
+                key_store.clone(),
+                AuthMessageType::WiiUForMmpReply2,
+            )),
+        );
+
+        auth_server.add_handler(
+            AuthMessageType::WiiUSecondaryForMmpRequest,
+            Arc::new(WiiUAuthHandler::new(
+                key_store.clone(),
+                AuthMessageType::WiiUSecondaryForMmpReply,
+            )),
+        );
+
+        auth_server.add_handler(
+            AuthMessageType::AccountForMmpRequest,
+            Arc::new(WiiUAuthHandler::new(
+                key_store.clone(),
+                AuthMessageType::AccountForMmpReply,
+            )),
+        );
+
+        auth_server.add_handler(
+            AuthMessageType::AnonymousForMmpRequest,
+            Arc::new(WiiUAuthHandler::new(
+                key_store,
+                AuthMessageType::AnonymousForMmpReply,
+            )),
         );
 
         auth_server
@@ -58,6 +99,8 @@ impl BdMessageHandler for AuthServer {
 
         let handler_type = AuthMessageType::from_u8(message_type_input)
             .ok_or_else(|| IllegalMessageTypeSnafu { message_type_input }.build())?;
+
+        info!("AuthServer session={} received message_type={handler_type:?} (0x{message_type_input:02x})", session.id);
 
         let handlers = self.auth_handlers.read().unwrap();
         let maybe_handler = handlers.get(&handler_type);

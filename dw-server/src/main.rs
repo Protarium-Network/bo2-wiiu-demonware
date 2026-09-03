@@ -9,8 +9,11 @@ use ::log::{error, info};
 use bitdemon::auth::auth_server::AuthServer;
 use bitdemon::auth::key_store::InMemoryKeyStore;
 use bitdemon::lobby::LobbyServer;
-use bitdemon::networking::bd_socket::BdSocket;
+use bitdemon::messaging::bd_message::BdMessage;
+use bitdemon::networking::bd_session::BdSession;
+use bitdemon::networking::bd_socket::{BdMessageHandler, BdSocket};
 use bitdemon::networking::session_manager::SessionManager;
+use std::error::Error;
 use std::process::exit;
 use std::sync::Arc;
 use tokio::fs::read_to_string;
@@ -18,6 +21,33 @@ use tokio::net::TcpListener;
 
 const AUTH_SERVER_PORT: u16 = 3075;
 const LOBBY_SERVER_PORT: u16 = 3074;
+
+struct CombinedServer {
+    auth_server: Arc<AuthServer>,
+    lobby_server: Arc<LobbyServer>,
+}
+
+impl BdMessageHandler for CombinedServer {
+    fn handle_message(
+        &self,
+        session: &mut BdSession,
+        message: BdMessage,
+    ) -> Result<(), Box<dyn Error>> {
+        if session.authentication().is_some() {
+            return self.lobby_server.handle_message(session, message);
+        }
+
+        let msg_type = message.reader.get_buffer().get(0).copied().unwrap_or(0);
+        info!("CombinedServer received message on port 3074: type=0x{:02x} ({}) session={}", msg_type, msg_type, session.id);
+
+        if msg_type == 0x26 || msg_type == 0x24 || msg_type == 0x28 || msg_type == 0x0A || msg_type == 0x10 || msg_type == 0x00 {
+            info!("Routing message 0x{:02x} to AuthServer", msg_type);
+            self.auth_server.handle_message(session, message)
+        } else {
+            self.lobby_server.handle_message(session, message)
+        }
+    }
+}
 
 #[tokio::main]
 async fn main() {
@@ -54,8 +84,13 @@ async fn main() {
 
     let lobby_router = configure_lobby_server(&lobby_server, lobby_session_manager, &config);
 
+    let combined_server = Arc::new(CombinedServer {
+        auth_server: auth_server.clone(),
+        lobby_server: lobby_server.clone(),
+    });
+
     let auth_join = auth_socket.run_async(auth_server);
-    let lobby_join = lobby_socket.run_async(lobby_server);
+    let lobby_join = lobby_socket.run_async(combined_server);
 
     let content_port = config.content_port();
     info!("Running content http server on port {content_port}");

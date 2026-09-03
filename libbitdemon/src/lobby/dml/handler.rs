@@ -71,6 +71,10 @@ impl DmlHandler {
         _reader: &mut BdReader,
     ) -> Result<BdResponse, Box<dyn Error>> {
         let dml_info = Self::create_mock_dml_info();
+        info!(
+            "DML GetUserData: replying {} / {}",
+            dml_info.country_code, dml_info.city
+        );
 
         TaskReply::with_results(DmlTaskId::GetUserData, vec![Box::from(dml_info)]).to_response()
     }
@@ -87,8 +91,10 @@ impl DmlHandler {
             tier3: 0,
         };
 
+        info!("DML GetUserHierarchicalData: replying with geo-location data");
+
         TaskReply::with_results(
-            DmlTaskId::GetUserData,
+            DmlTaskId::GetUserHierarchicalData,
             vec![Box::from(dml_hierarchical_info)],
         )
         .to_response()

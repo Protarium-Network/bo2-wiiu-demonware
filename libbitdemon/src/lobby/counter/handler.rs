@@ -6,7 +6,7 @@ use crate::messaging::BdErrorCode;
 use crate::messaging::bd_message::BdMessage;
 use crate::messaging::bd_reader::BdReader;
 use crate::messaging::bd_response::{BdResponse, ResponseCreator};
-use crate::messaging::bd_serialization::BdDeserialize;
+use crate::messaging::bd_serialization::{BdDeserialize, BdSerialize};
 use crate::networking::bd_session::BdSession;
 use log::warn;
 use num_traits::FromPrimitive;
@@ -89,10 +89,24 @@ impl CounterHandler {
             counter_ids.push(reader.read_u32()?);
         }
 
-        self.counter_service
+        let values = self
+            .counter_service
             .get_counter_totals(session, counter_ids)?;
 
-        TaskReply::with_only_error_code(BdErrorCode::NoError, CounterTaskId::GetCounterTotals)
-            .to_response()
+        // The retrieved totals must actually be sent back: the title stores them
+        // via LiveCounter_GetCounterTotalValue (RPL 0x02696ba4) and renders the
+        // online-population figures from them. Replying with only an error code
+        // leaves every counter at its initial -1/0 and shows "0 online".
+        let results: Vec<Box<dyn BdSerialize>> = values
+            .into_iter()
+            .map(|value| {
+                Box::new(CounterValueResult {
+                    counter_id: value.counter_id,
+                    counter_value: value.counter_value,
+                }) as Box<dyn BdSerialize>
+            })
+            .collect();
+
+        TaskReply::with_results(CounterTaskId::GetCounterTotals, results).to_response()
     }
 }
