@@ -63,6 +63,10 @@ impl BdReader {
         self.type_checked = type_checked;
     }
 
+    pub fn get_buffer(&self) -> &[u8] {
+        self.cursor.get_ref().as_slice()
+    }
+
     pub fn read_bits(&mut self, buf: &mut [u8], count: usize) -> Result<(), Box<dyn Error>> {
         debug_assert!(buf.len() * 8 >= count, "Buffer does not fit");
 

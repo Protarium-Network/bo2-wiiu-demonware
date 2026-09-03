@@ -6,6 +6,7 @@ use num_derive::{FromPrimitive, ToPrimitive};
 use num_traits::ToPrimitive;
 use snafu::{Snafu, ensure};
 use std::error::Error;
+use tiger::{Digest, Tiger};
 
 #[derive(Debug, Eq, PartialEq, Hash, Copy, Clone, FromPrimitive, ToPrimitive)]
 #[repr(u8)]
@@ -40,14 +41,6 @@ impl BdSerialize for AuthTicket {
         writer.set_type_checked(false);
         writer.set_mode(StreamMode::ByteMode);
 
-        writer.write_u32(MAGIC_NUMBER)?;
-        writer.write_u8(self.ticket_type.to_u8().unwrap())?;
-        writer.write_u32(self.title.to_u32().unwrap())?;
-        writer.write_u32(self.time_issued)?;
-        writer.write_u32(self.time_expires)?;
-        writer.write_u64(self.license_id)?;
-        writer.write_u64(self.user_id)?;
-
         ensure!(
             self.username.len() <= NAME_MAX_LEN,
             UsernameTooLongSnafu {
@@ -55,15 +48,28 @@ impl BdSerialize for AuthTicket {
             }
         );
 
-        writer.write_bytes(self.username.as_ref())?;
-        for _ in self.username.len()..64 {
-            writer.write_bytes(&[0])?;
-        }
+        // Retail bdAuthTicket is exactly 128 bytes. All integer fields are
+        // serialized little-endian, followed by the fixed Wii U trailer and
+        // the first four bytes of Tiger192(ticket[0..121]).
+        let mut ticket = Vec::with_capacity(128);
+        ticket.extend_from_slice(&MAGIC_NUMBER.to_le_bytes());
+        ticket.push(self.ticket_type.to_u8().unwrap());
+        ticket.extend_from_slice(&self.title.to_u32().unwrap().to_le_bytes());
+        ticket.extend_from_slice(&self.time_issued.to_le_bytes());
+        ticket.extend_from_slice(&self.time_expires.to_le_bytes());
+        ticket.extend_from_slice(&self.license_id.to_le_bytes());
+        ticket.extend_from_slice(&self.user_id.to_le_bytes());
+        ticket.extend_from_slice(self.username.as_bytes());
+        ticket.resize(ticket.len() + (NAME_MAX_LEN - self.username.len()), 0);
+        ticket.extend_from_slice(&self.session_key);
+        debug_assert_eq!(ticket.len(), 121);
+        let checksum = Tiger::digest(&ticket);
+        ticket.extend_from_slice(&[0x55, 0x33, 0x22]);
+        debug_assert_eq!(ticket.len(), 124);
+        ticket.extend_from_slice(&checksum[..4]);
+        debug_assert_eq!(ticket.len(), 128);
 
-        writer.write_bytes(self.session_key.as_ref())?;
-
-        // Random hash stuff that is unused?
-        writer.write_bytes(&[0, 0, 0, 0])?;
+        writer.write_bytes(&ticket)?;
         Ok(())
     }
 }

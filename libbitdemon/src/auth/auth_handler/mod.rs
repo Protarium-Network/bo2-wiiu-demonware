@@ -1,4 +1,4 @@
-﻿use crate::auth::response::AuthResponse;
+use crate::auth::response::AuthResponse;
 use crate::messaging::bd_message::BdMessage;
 use crate::networking::bd_session::BdSession;
 use num_derive::{FromPrimitive, ToPrimitive};
@@ -75,3 +75,4 @@ pub trait AuthHandler {
 
 mod authentication_request;
 pub mod steam;
+pub mod wiiu;
