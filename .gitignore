@@ -2,3 +2,15 @@
 local
 .vscode
 /target
+
+# --- Wii U / BO2 fork ---
+# Runtime state and player data: profiles, uploaded files, stats.
+/db/
+# Publisher files are Activision game assets, not ours to redistribute.
+/storage/
+# Deployment-specific.
+/config.json
+# Editing leftovers.
+*.bak
+*.bak-*
+*.pre-*
