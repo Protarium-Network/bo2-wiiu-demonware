@@ -54,9 +54,49 @@ impl LobbyHandler for LsgHandler {
 
         let mut auth_proof: [u8; 128] = [0; 128];
         message.reader.read_bytes(&mut auth_proof)?;
+        let proof_hex: String = auth_proof
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect();
+        info!("WiiU opaque proof received by LSG: {proof_hex}");
 
-        let auth_proof =
-            ClientOpaqueAuthProof::deserialize(&mut auth_proof, self.key_store.as_ref())?;
+        let auth_proof = if auth_proof.iter().all(|byte| *byte == 0) && title == Title::T6WiiU {
+            // BO2 Wii U sends an all-zero 128-byte LSG proof after the
+            // WiiUForMmpReply2 exchange. Its actual session key was delivered
+            // inside bdAuthTicket. This temporary compatibility path mirrors
+            // that key so the next encrypted packet can validate its HMAC.
+            info!("Using BO2 Wii U zero-proof compatibility path");
+            // Recover the PID that authenticated from this same client address a
+            // moment ago; only fall back to the historical hard-coded value if the
+            // auth exchange never produced one.
+            let pid = session
+                .peer_ip()
+                .and_then(|ip| crate::auth::auth_handler::wiiu::recall_pid(&ip))
+                .unwrap_or(1768140980);
+            info!("LSG zero-proof resolved to PID {pid}");
+            ClientOpaqueAuthProof {
+                title,
+                time_expires: chrono::Utc::now().timestamp() + 300,
+                license_id: pid,
+                // The title addresses its own storage by the Demonware ID, not the
+                // raw Nintendo PID: bdAuthUtility::createDWIDForWiiU builds it as
+                //     DWID = 0xBD00 << 32 | PID
+                // (0xBD00 being the Wii U platform prefix). Observed live:
+                // PID 1768140980 (0x6963b0b4) -> DWID 207809465790644 (0xbd006963b0b4).
+                // Reporting the PID here made the game upload its files under one
+                // owner id while reading them back under another, so it never found
+                // its own mpstatsCompressed / mpClassSets and its stats stayed empty.
+                user_id: 0x0000_BD00_0000_0000u64 | pid,
+                session_key: [
+                    0x01, 0x23, 0x45, 0x67, 0x89, 0xAB, 0xCD, 0xEF,
+                    0xFE, 0xDC, 0xBA, 0x98, 0x76, 0x54, 0x32, 0x10,
+                    0x55, 0xAA, 0x55, 0xAA, 0x33, 0xCC, 0x33, 0xCC,
+                ],
+                username: format!("WiiUUser{pid}"),
+            }
+        } else {
+            ClientOpaqueAuthProof::deserialize(&mut auth_proof, self.key_store.as_ref())?
+        };
 
         let now = chrono::Utc::now().timestamp();
         ensure!(

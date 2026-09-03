@@ -1,5 +1,6 @@
 use crate::lobby::storage::db::{STORAGE_DB, from_file_visibility, from_title, to_file_visibility};
 use bitdemon::domain::result_slice::ResultSlice;
+use bitdemon::domain::title::Title;
 use bitdemon::lobby::storage::{
     FileVisibility, StorageFileInfo, StorageServiceError, UserStorageService,
 };
@@ -11,6 +12,63 @@ pub struct DwUserStorageService {}
 
 const MAX_FILENAME_LENGTH: usize = 260;
 const MAX_USER_FILE_SIZE: usize = 50_000; // 50KB
+
+/// Shared query backing both `list_storage_files` and `filter_storage_files`:
+/// all of the caller's own files for this title, modified at or after
+/// `min_date_time`, optionally restricted to filenames starting with
+/// `filter_prefix`, newest-modified first.
+fn query_user_files(
+    owner_id: u64,
+    title_num: u32,
+    title: Title,
+    min_date_time: i64,
+    filter_prefix: Option<String>,
+    offset: usize,
+    count: usize,
+) -> Vec<StorageFileInfo> {
+    STORAGE_DB.with_borrow(|db| {
+        let filename_pattern = filter_prefix.map(|prefix| format!("{prefix}%"));
+
+        let mut stmt = db
+            .prepare(
+                "SELECT id, filename, LENGTH(data), created_at, modified_at, visibility
+                 FROM user_file
+                 WHERE owner_id = ?1 AND title = ?2 AND modified_at >= ?3
+                   AND (?4 IS NULL OR filename LIKE ?4)
+                 ORDER BY modified_at DESC
+                 LIMIT ?5 OFFSET ?6",
+            )
+            .expect("statement to prepare");
+
+        let rows = stmt
+            .query_map(
+                (
+                    owner_id,
+                    title_num,
+                    min_date_time,
+                    filename_pattern,
+                    count as i64,
+                    offset as i64,
+                ),
+                |row| {
+                    let file_size: i64 = row.get(2)?;
+                    Ok(StorageFileInfo {
+                        id: row.get::<_, i64>(0)? as u64,
+                        filename: row.get(1)?,
+                        title,
+                        file_size: file_size as u64,
+                        created: row.get(3)?,
+                        modified: row.get(4)?,
+                        visibility: to_file_visibility(row.get(5)?),
+                        owner_id,
+                    })
+                },
+            )
+            .expect("query to run");
+
+        rows.filter_map(|row| row.ok()).collect()
+    })
+}
 
 impl UserStorageService for DwUserStorageService {
     fn get_storage_file_data_by_id(
@@ -73,25 +131,67 @@ impl UserStorageService for DwUserStorageService {
 
     fn list_storage_files(
         &self,
-        _session: &BdSession,
-        _owner_id: u64,
-        _min_date_time: i64,
-        _page_offset: usize,
-        _page_size: usize,
+        session: &BdSession,
+        owner_id: u64,
+        min_date_time: i64,
+        page_offset: usize,
+        page_size: usize,
     ) -> Result<ResultSlice<StorageFileInfo>, StorageServiceError> {
-        todo!()
+        info!(
+            "Listing storage files owner_id={owner_id} min_date_time={min_date_time} page_offset={page_offset} page_size={page_size}"
+        );
+
+        let title = session.authentication().unwrap().title;
+        let title_num = from_title(title);
+
+        let files = query_user_files(
+            owner_id,
+            title_num,
+            title,
+            min_date_time,
+            None,
+            page_offset,
+            page_size,
+        );
+
+        if files.is_empty() {
+            Err(StorageServiceError::StorageFileNotFoundError)
+        } else {
+            Ok(ResultSlice::new(files, page_offset))
+        }
     }
 
     fn filter_storage_files(
         &self,
-        _session: &BdSession,
-        _owner_id: u64,
-        _min_date_time: i64,
-        _item_offset: usize,
-        _item_count: usize,
-        _filter: String,
+        session: &BdSession,
+        owner_id: u64,
+        min_date_time: i64,
+        item_offset: usize,
+        item_count: usize,
+        filter: String,
     ) -> Result<ResultSlice<StorageFileInfo>, StorageServiceError> {
-        todo!()
+        info!(
+            "Filtering storage files owner_id={owner_id} min_date_time={min_date_time} item_offset={item_offset} item_count={item_count} filter={filter}"
+        );
+
+        let title = session.authentication().unwrap().title;
+        let title_num = from_title(title);
+
+        let files = query_user_files(
+            owner_id,
+            title_num,
+            title,
+            min_date_time,
+            Some(filter),
+            item_offset,
+            item_count,
+        );
+
+        if files.is_empty() {
+            Err(StorageServiceError::StorageFileNotFoundError)
+        } else {
+            Ok(ResultSlice::new(files, item_offset))
+        }
     }
 
     fn create_storage_file(

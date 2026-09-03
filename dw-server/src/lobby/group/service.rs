@@ -19,11 +19,9 @@ impl GroupService for DwGroupService {
         _session: &BdSession,
         groups: &[u32],
     ) -> Result<Vec<u64>, Box<dyn Error>> {
-        info!("Retrieving counts for {} groups", groups.len());
-
         let aggregated_group_counts = self.aggregated_group_counts.read().unwrap();
 
-        Ok(groups
+        let counts: Vec<u64> = groups
             .iter()
             .map(|group_id| {
                 aggregated_group_counts
@@ -31,11 +29,27 @@ impl GroupService for DwGroupService {
                     .copied()
                     .unwrap_or(0u64)
             })
-            .collect())
+            .collect();
+
+        let non_zero: Vec<(u32, u64)> = groups
+            .iter()
+            .copied()
+            .zip(counts.iter().copied())
+            .filter(|(_, count)| *count > 0)
+            .collect();
+        info!(
+            "Retrieving counts for {} groups; {} non-zero: {:?}; table now holds {:?}",
+            groups.len(),
+            non_zero.len(),
+            non_zero,
+            *aggregated_group_counts
+        );
+
+        Ok(counts)
     }
 
     fn set_groups(&self, session: &BdSession, groups: &[u32]) -> Result<(), Box<dyn Error>> {
-        info!("Setting {} groups for session", groups.len());
+        info!("Setting {} groups for session: {:?}", groups.len(), groups);
 
         let previous_groups: HashSet<GroupId>;
         let groups_clone = groups.to_vec();
@@ -51,16 +65,24 @@ impl GroupService for DwGroupService {
             session_groups.insert(session.id, groups_clone);
         }
 
-        let new_groups: HashSet<GroupId> = HashSet::from_iter(
-            groups
-                .iter()
-                .cloned()
-                .filter(|group_id| !previous_groups.contains(group_id)),
-        );
+        // "Groups the session is in now" - needed to work out what it actually left.
+        let current_groups: HashSet<GroupId> = HashSet::from_iter(groups.iter().cloned());
 
+        let new_groups: HashSet<GroupId> = current_groups
+            .difference(&previous_groups)
+            .cloned()
+            .collect();
+
+        // A group counts as left only when it is absent from the NEW list. The
+        // previous code compared against `new_groups`, which by construction never
+        // intersects `previous_groups`, so the filter was always true and every
+        // group the session kept was decremented without being re-incremented.
+        // Re-sending the same group list therefore drove every count to zero,
+        // which is what made the menu report "0 online"
+        // (LiveGroups_GetCount("online") -> XBOXLIVE_TOTALUSERCOUNT).
         let left_groups: Vec<GroupId> = previous_groups
-            .into_iter()
-            .filter(|group_id| !new_groups.contains(group_id))
+            .difference(&current_groups)
+            .cloned()
             .collect();
 
         let mut aggregated_group_counts = self.aggregated_group_counts.write().unwrap();
