@@ -12,6 +12,33 @@ use std::path::{Component, PathBuf};
 use std::str::FromStr;
 use std::time::UNIX_EPOCH;
 
+/// Map a locale-specific publisher filename to its English equivalent.
+///
+/// A French EUR console asks for `online_tu9_mp_french.wad` and
+/// `fr_ffotd_tu9_mp_148.ff.00`. The store only carries the English builds, and a
+/// missing `.wad` leaves the online menu with nothing to populate its playlists
+/// from - so "Black Ops II online" does nothing. The English `.wad` drives
+/// matchmaking identically for every locale, so serve it as the fallback.
+fn delocalise(filename: &str) -> Option<String> {
+    const LANGS: &[&str] = &[
+        "french", "german", "italian", "spanish", "portuguese", "brazilian",
+        "polish", "russian", "japanese", "dutch", "korean",
+    ];
+    for lang in LANGS {
+        let needle = format!("_{lang}");
+        if filename.contains(needle.as_str()) {
+            return Some(filename.replace(needle.as_str(), "_english"));
+        }
+    }
+    const PREFIXES: &[&str] = &["fr_", "de_", "it_", "es_", "pt_", "nl_", "pl_", "ru_", "ja_", "ko_"];
+    for pfx in PREFIXES {
+        if let Some(rest) = filename.strip_prefix(*pfx) {
+            return Some(format!("en_{rest}"));
+        }
+    }
+    None
+}
+
 pub struct DwPublisherStorageService {}
 
 impl PublisherStorageService for DwPublisherStorageService {
@@ -39,10 +66,23 @@ impl PublisherStorageService for DwPublisherStorageService {
             session.authentication().unwrap().title.to_u32().unwrap()
         );
 
-        fs::read(full_file_path).map_err(|_| {
-            warn!("Requested publisher file could not be found",);
-            StorageServiceError::StorageFileNotFoundError
-        })
+        if let Ok(data) = fs::read(&full_file_path) {
+            return Ok(data);
+        }
+
+        if let Some(alt_name) = delocalise(&filename) {
+            let alt_path = format!(
+                "storage/publisher/{}/{alt_name}",
+                session.authentication().unwrap().title.to_u32().unwrap()
+            );
+            if let Ok(data) = fs::read(&alt_path) {
+                info!("Served {alt_name} in place of {filename}");
+                return Ok(data);
+            }
+        }
+
+        warn!("Requested publisher file could not be found");
+        Err(StorageServiceError::StorageFileNotFoundError)
     }
 
     fn list_publisher_files(
@@ -101,17 +141,19 @@ impl PublisherStorageService for DwPublisherStorageService {
             return Ok(ResultSlice::new(Vec::new(), item_offset));
         }
 
+        // A French console filters for `online_tu9_mp_french.wad`; only the
+        // English build is on disk. Match either the requested prefix or its
+        // English form so the listing is non-empty and the console then
+        // downloads the file that actually exists.
+        let alt_filter = delocalise(&filter);
         let file_info: Vec<StorageFileInfo> = dir
             .unwrap()
             .filter(|entry| entry.is_ok())
             .filter(|entry| {
-                entry
-                    .as_ref()
-                    .unwrap()
-                    .file_name()
-                    .to_str()
-                    .unwrap()
-                    .starts_with(&filter)
+                let name = entry.as_ref().unwrap().file_name();
+                let name = name.to_str().unwrap();
+                name.starts_with(&filter)
+                    || alt_filter.as_deref().is_some_and(|a| name.starts_with(a))
             })
             .skip(item_offset)
             .map(|entry| entry.unwrap())
