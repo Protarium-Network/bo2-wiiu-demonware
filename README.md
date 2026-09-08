@@ -17,3 +17,5 @@ and laying the groundwork for understanding the protocol.
 The source code of this project is licensed under [GNU AGPL v3](./LICENSE).
 This software has been created purely for the purposes of academic research.
 It is not suitable for or made to replace any official services.
+
+_Deployed and maintained as part of the [Protarium Network](https://github.com/Protarium-Network) Wii U online service revival project._
