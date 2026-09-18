@@ -49,11 +49,31 @@ EXTRA_PORTS = [30000]
 # tell. Since BO2 deprioritises strict-to-strict peers, that verdict is not just
 # wrong, it is harmful - so answer test 2 from the primary port, which their NAT
 # already accepts, and advertise a different one here.
+#
+# 2026-09-04 night: a second box (BDNET_SEC_IP) is now available, running
+# nat_sec_responder.py on udp/3074 and answering the same NAT_REQ_T request
+# from its own genuinely different public IP. When it's set, advertise *that*
+# address as secAddr instead of lying about the port on this same IP - lets
+# test 2/3 run honestly, the way a real two-IP Demonware deployment would.
+# Falls back to the same-IP-different-port workaround when unset.
+#
+# 2026-09-04 night, take 3: handleResponse (RPL 0x02a23b8c) only reaches
+# state 4 (a real verdict - see getNATType, RPL 0x02a244cc, which returns 0
+# for anything else) when the test-2 reply's *port* differs from the
+# advertised secAddr port too, IP match alone isn't enough. The secondary
+# only had one port bound (3074, same as ADV_SEC ended up being when it was
+# forced to PRIMARY) so IP matched but port did too - dead end, same as
+# same-IP. Keeping ADV_SEC at SEC (3076, a port the console never talks to)
+# while the secondary answers relayed test 2 from its own 3074 gives IP-match
+# + port-mismatch, the only combination that reaches Open. The secondary also
+# binds 3076 itself so a genuine test 3 (which targets secAddr as-advertised)
+# has something real to answer it.
 ADV_SEC = SEC
 import os
 # The address this server is reachable at. It goes into the NAT-type reply as
 # secAddr, so it has to be the real public address of this host.
 SELF_IP = os.environ.get("BDNET_PUBLIC_IP", "127.0.0.1")
+SEC_IP = os.environ.get("BDNET_SEC_IP")
 
 IP_T = 0x1E
 NAT_REQ_T, NAT_REPLY_T = 0x14, 0x15
@@ -78,7 +98,7 @@ def ip_reply(ip, port):
 
 def nat_reply(cli_ip, cli_port):
     return (bytes([NAT_REPLY_T]) + struct.pack("<H", 2)
-            + bdaddr(SELF_IP, ADV_SEC)
+            + bdaddr(SEC_IP or SELF_IP, ADV_SEC)
             + bdaddr(cli_ip, cli_port))
 
 
@@ -138,9 +158,26 @@ while True:
 
         if t == NAT_REQ_T:
             req = data[3] if len(data) > 3 else None
-            reply = nat_reply(addr[0], addr[1])
             key = ("nat", port, req)
             seen_types[key] = seen_types.get(key, 0) + 1
+
+            # Test 2 (req=3) is always sent to us, never to secAddr - but
+            # handleResponse (RPL 0x02a23b8c) only advances past a silent
+            # no-op when the *reply* to test 2 arrives from the exact IP
+            # already advertised as secAddr. With one IP that's us, so the
+            # honest fix isn't "mention a different address in the packet" -
+            # it's having the genuinely different machine send this reply
+            # itself. Relay it over a control channel instead of answering
+            # ourselves (2026-09-04 night).
+            if req == 3 and SEC_IP:
+                relay = bytes([0xFE]) + socket.inet_aton(addr[0]) + struct.pack("<H", addr[1])
+                s.sendto(relay, (SEC_IP, PRIMARY))
+                if seen_types[key] <= 8:
+                    say(":%d NAT req=%s from %s:%d -> relayed to secondary %s for the reply"
+                        % (port, req, addr[0], addr[1], SEC_IP))
+                continue
+
+            reply = nat_reply(addr[0], addr[1])
             # Always answer on the socket the request arrived on. A console
             # patched to bdNet port 30000 has never talked to udp/3074, so a reply
             # from there is dropped by its NAT and test 2 fails - which is what
@@ -151,8 +188,8 @@ while True:
             # a port no console talks to (3076) while this stays 3074 or 30000.
             s.sendto(reply, addr)
             if seen_types[key] <= 8:
-                say(":%d NAT req=%s from %s:%d -> reply from :%d  secAddr=%s:%d"
-                    % (port, req, addr[0], addr[1], port, SELF_IP, ADV_SEC))
+                say(":%d NAT req=%s raw=%s from %s:%d -> reply from :%d  secAddr=%s:%d"
+                    % (port, req, data.hex(), addr[0], addr[1], port, SEC_IP or SELF_IP, ADV_SEC))
             continue
 
         # Anything else that is 29 bytes and announces version >= 2 is a
@@ -186,7 +223,12 @@ while True:
             # the mapping we can see and the requester cannot - makes that check
             # compare an HMAC over our address against one taken over theirs, so
             # every reply is silently rejected and traversal never completes.
-            if dest is not None:
+            # Only an introduction request gets relayed. Everything else that
+            # is 29 bytes - a stage-1 punch (0x0d) aimed at us by the
+            # BO2_MM_STAGE1_SINK diagnostic, or a stray INTRO_REPLY - carries a
+            # destination too, and forwarding those would bounce packets back at
+            # the sender or at ourselves.
+            if t == TRAV_SERVER and dest is not None:
                 intro = bytes([TRAV_INTRO]) + data[1:]
                 out = socks.get(peer_port.get(dest, PRIMARY), s_pri)
                 try:

@@ -4,6 +4,7 @@ pub mod content_streaming;
 pub mod counter;
 pub mod dml;
 pub mod event_log;
+pub mod friends;
 pub mod group;
 pub mod key_archive;
 pub mod league;
