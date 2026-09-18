@@ -36,11 +36,44 @@ PRIMARY, ALT, SEC = 3074, 3075, 3076
 # a console patched to 30000 sends from 30000 *to* 30000, so the responder has
 # to answer there as well as on the stock 3074.
 EXTRA_PORTS = [30000]
-ADV_SEC = PRIMARY  # secAddr we advertise; test 3 is aimed at it, so it must be open
+# The secAddr we advertise in the test-1 reply. It has to be a port we listen on
+# (sendForTest3 aims there) AND differ from the port we answer test 2 from,
+# because handleResponse (RPL 0x02a23b8c) calls it an Open NAT exactly when the
+# test-2 reply arrives from the secAddr's IP on a *different* port.
+#
+# A real Demonware deployment has two public IPs and can run that test honestly.
+# With one IP the honest version - answering from a port the console has never
+# contacted - is dropped by any restrictive NAT, so every player fails test 2,
+# falls through to "Test 3 failed. Strict NAT" and is reported Strict regardless
+# of their actual connection. Three different routers all reading Strict is the
+# tell. Since BO2 deprioritises strict-to-strict peers, that verdict is not just
+# wrong, it is harmful - so answer test 2 from the primary port, which their NAT
+# already accepts, and advertise a different one here.
+#
+# 2026-09-04 night: a second box (BDNET_SEC_IP) is now available, running
+# nat_sec_responder.py on udp/3074 and answering the same NAT_REQ_T request
+# from its own genuinely different public IP. When it's set, advertise *that*
+# address as secAddr instead of lying about the port on this same IP - lets
+# test 2/3 run honestly, the way a real two-IP Demonware deployment would.
+# Falls back to the same-IP-different-port workaround when unset.
+#
+# 2026-09-04 night, take 3: handleResponse (RPL 0x02a23b8c) only reaches
+# state 4 (a real verdict - see getNATType, RPL 0x02a244cc, which returns 0
+# for anything else) when the test-2 reply's *port* differs from the
+# advertised secAddr port too, IP match alone isn't enough. The secondary
+# only had one port bound (3074, same as ADV_SEC ended up being when it was
+# forced to PRIMARY) so IP matched but port did too - dead end, same as
+# same-IP. Keeping ADV_SEC at SEC (3076, a port the console never talks to)
+# while the secondary answers relayed test 2 from its own 3074 gives IP-match
+# + port-mismatch, the only combination that reaches Open. The secondary also
+# binds 3076 itself so a genuine test 3 (which targets secAddr as-advertised)
+# has something real to answer it.
+ADV_SEC = SEC
 import os
 # The address this server is reachable at. It goes into the NAT-type reply as
 # secAddr, so it has to be the real public address of this host.
 SELF_IP = os.environ.get("BDNET_PUBLIC_IP", "127.0.0.1")
+SEC_IP = os.environ.get("BDNET_SEC_IP")
 
 IP_T = 0x1E
 NAT_REQ_T, NAT_REPLY_T = 0x14, 0x15
@@ -65,7 +98,7 @@ def ip_reply(ip, port):
 
 def nat_reply(cli_ip, cli_port):
     return (bytes([NAT_REPLY_T]) + struct.pack("<H", 2)
-            + bdaddr(SELF_IP, ADV_SEC)
+            + bdaddr(SEC_IP or SELF_IP, ADV_SEC)
             + bdaddr(cli_ip, cli_port))
 
 
@@ -96,10 +129,11 @@ s_pri = socks.get(PRIMARY)
 s_alt = socks.get(ALT)
 say("responder v4 up: IP discovery + NAT type discovery + NAT traversal introducer")
 
-# Everyone that has said hello recently, so an introduction can be aimed at the
-# mapping we have actually seen traffic from rather than the address a peer
-# claims for itself.
-peers = {}
+# addr -> the local port that peer talks to us on. A console patched to bdNet
+# port 30000 never contacts udp/3074, so relaying an INTRO to it from 3074 is
+# a packet from an endpoint its NAT has never seen. Remember each peer's port
+# and answer from the same one.
+peer_port = {}
 seen_types = {}
 n_ip = 0
 
@@ -124,18 +158,38 @@ while True:
 
         if t == NAT_REQ_T:
             req = data[3] if len(data) > 3 else None
-            reply = nat_reply(addr[0], addr[1])
             key = ("nat", port, req)
             seen_types[key] = seen_types.get(key, 0) + 1
-            if req == 3 and s_alt is not None:
-                # Test 2 asks whether a packet from an endpoint the console has
-                # never contacted can still reach it. Answering from a second
-                # port is the honest version of that probe with one IP.
-                s_alt.sendto(reply, addr)
-            else:
-                s.sendto(reply, addr)
-            if seen_types[key] <= 2:
-                say(":%d NAT test req=%s from %s:%d" % (port, req, addr[0], addr[1]))
+
+            # Test 2 (req=3) is always sent to us, never to secAddr - but
+            # handleResponse (RPL 0x02a23b8c) only advances past a silent
+            # no-op when the *reply* to test 2 arrives from the exact IP
+            # already advertised as secAddr. With one IP that's us, so the
+            # honest fix isn't "mention a different address in the packet" -
+            # it's having the genuinely different machine send this reply
+            # itself. Relay it over a control channel instead of answering
+            # ourselves (2026-09-04 night).
+            if req == 3 and SEC_IP:
+                relay = bytes([0xFE]) + socket.inet_aton(addr[0]) + struct.pack("<H", addr[1])
+                s.sendto(relay, (SEC_IP, PRIMARY))
+                if seen_types[key] <= 8:
+                    say(":%d NAT req=%s from %s:%d -> relayed to secondary %s for the reply"
+                        % (port, req, addr[0], addr[1], SEC_IP))
+                continue
+
+            reply = nat_reply(addr[0], addr[1])
+            # Always answer on the socket the request arrived on. A console
+            # patched to bdNet port 30000 has never talked to udp/3074, so a reply
+            # from there is dropped by its NAT and test 2 fails - which is what
+            # kept it reading Strict while consoles on 3074 were fine.
+            #
+            # handleResponse calls it an Open NAT when the reply's source port
+            # differs from the advertised secAddr port, so ADV_SEC just has to be
+            # a port no console talks to (3076) while this stays 3074 or 30000.
+            s.sendto(reply, addr)
+            if seen_types[key] <= 8:
+                say(":%d NAT req=%s raw=%s from %s:%d -> reply from :%d  secAddr=%s:%d"
+                    % (port, req, data.hex(), addr[0], addr[1], port, SEC_IP or SELF_IP, ADV_SEC))
             continue
 
         # Anything else that is 29 bytes and announces version >= 2 is a
@@ -149,7 +203,7 @@ while True:
             key = ("trav", t)
             seen_types[key] = seen_types.get(key, 0) + 1
 
-            peers[addr] = time.time()
+            peer_port[addr] = port
 
             if t == TRAV_KEEPALIVE:
                 if seen_types[key] % 20 == 1:
@@ -160,16 +214,27 @@ while True:
             say(":%d TRAV type=0x%02x ver=%d id=%s hmac=%s src=%s dest=%s from %s:%d"
                 % (port, t, ver, ident.hex(), hmac.hex(), src, dest, addr[0], addr[1]))
 
-            # An introduction request names the peer it wants reached. Relay it
-            # as an INTRO, replacing addrSrc with the mapping we actually see the
-            # requester on - that is the address the peer must punch back to.
-            if dest is not None:
-                intro = (bytes([TRAV_INTRO]) + data[1:3] + ident + hmac
-                         + bdaddr(addr[0], addr[1]) + data[23:29])
+            # An introduction request names the peer it wants reached. Flip the
+            # type to INTRO and forward everything else BYTE FOR BYTE.
+            #
+            # Nothing else may change. doHMac (RPL 0x02a20048) computes the HMAC
+            # over (identifier, addrSrc, addrDest), and the requester verifies it
+            # again when the INTRO_REPLY comes back. Rewriting addrSrc - even to
+            # the mapping we can see and the requester cannot - makes that check
+            # compare an HMAC over our address against one taken over theirs, so
+            # every reply is silently rejected and traversal never completes.
+            # Only an introduction request gets relayed. Everything else that
+            # is 29 bytes - a stage-1 punch (0x0d) aimed at us by the
+            # BO2_MM_STAGE1_SINK diagnostic, or a stray INTRO_REPLY - carries a
+            # destination too, and forwarding those would bounce packets back at
+            # the sender or at ourselves.
+            if t == TRAV_SERVER and dest is not None:
+                intro = bytes([TRAV_INTRO]) + data[1:]
+                out = socks.get(peer_port.get(dest, PRIMARY), s_pri)
                 try:
-                    s_pri.sendto(intro, dest)
-                    say("  -> INTRO to %s:%d on behalf of %s:%d"
-                        % (dest[0], dest[1], addr[0], addr[1]))
+                    out.sendto(intro, dest)
+                    say("  -> INTRO to %s:%d from udp/%d on behalf of %s:%d"
+                        % (dest[0], dest[1], out.getsockname()[1], addr[0], addr[1]))
                 except OSError as e:
                     say("  -> INTRO to %s failed: %s" % (dest, e))
             continue
