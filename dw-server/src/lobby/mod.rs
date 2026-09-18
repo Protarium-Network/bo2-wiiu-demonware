@@ -14,14 +14,15 @@ use crate::lobby::rich_presence::create_rich_presence_handler;
 use crate::lobby::storage::create_storage_handler;
 use axum::Router;
 use bitdemon::lobby::LobbyServiceId::{
-    Anticheat, BandwidthTest, Counter, Dml, EventLog, Group, KeyArchive, League, Matchmaking,
-    Profile,
+    Anticheat, BandwidthTest, Counter, Dml, EventLog, Friends, Group, KeyArchive, League,
+    Matchmaking, Profile,
     Messaging, RichPresence, Stats, Storage, TitleUtilities, Twitch, VoteRank, Youtube,
 };
 use bitdemon::lobby::anti_cheat::AntiCheatHandler;
 use bitdemon::lobby::bandwidth::BandwidthHandler;
 use bitdemon::lobby::dml::DmlHandler;
 use bitdemon::lobby::event_log::EventLogHandler;
+use bitdemon::lobby::friends::FriendsHandler;
 use bitdemon::lobby::key_archive::KeyArchiveHandler;
 use bitdemon::lobby::league::LeagueHandler;
 use bitdemon::lobby::matchmaking::MatchmakingHandler;
@@ -51,6 +52,7 @@ pub fn configure_lobby_server(
     configurer.direct_config(Counter, create_counter_handler());
     configurer.direct_config(Dml, Arc::new(DmlHandler::new()));
     configurer.direct_config(EventLog, Arc::new(EventLogHandler::new()));
+    configurer.direct_config(Friends, Arc::new(FriendsHandler::new()));
     configurer.direct_config(Group, create_group_handler(session_manager.clone()));
     configurer.direct_config(KeyArchive, Arc::new(KeyArchiveHandler::new()));
     configurer.direct_config(League, Arc::new(LeagueHandler::new()));
